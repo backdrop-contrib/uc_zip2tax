@@ -1,0 +1,8 @@
+name = Ubercart Zip2Tax
+description = Charge destination-based state sales tax using the Zip2Tax rate lookup service.
+dependencies[] = uc_taxes
+package = Ubercart - extra
+backdrop = 1.x
+type = module
+
+configure = admin/store/settings/taxes/uc_zip2tax

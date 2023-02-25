@@ -1,0 +1,17 @@
+{
+    "_config_name": "uc_zip2tax.settings",
+    "uc_zip2tax_tax_id": "102",
+    " uc_zip2tax_user": "",
+    "uc_zip2tax_pass": "",
+    "uc_zip2tax_lookup_statuses": [],
+    " uc_zip2tax_show_state": "0",
+    "uc_zip2tax_show_jurisdiction": "0",
+    "uc_zip2tax_show_rate": "0",
+    "uc_zip2tax_wholesale_roles": [],
+    "uc_zip2tax_nexus_countries": {
+        "840": "840"
+    },
+    "uc_zip2tax_nexus_zones": [],
+    "uc_zip2tax_taxation_method": "0",
+    "uc_zip2tax_taxation_vocabulary": ""
+}

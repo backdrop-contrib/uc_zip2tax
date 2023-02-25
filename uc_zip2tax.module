@@ -1,0 +1,421 @@
+<?php
+/**
+ * @file
+ * Zip2Tax module for Ubercart.
+ */
+
+/**
+ * Taxation method
+ */
+define('UC_ZIP2TAX_METHOD_PRODUCT_TYPE', 0);
+define('UC_ZIP2TAX_METHOD_TAXONOMY_TERM', 1);
+
+/**
+ * Implements hook_menu().
+ */
+function uc_zip2tax_menu() {
+
+  $items['admin/store/settings/taxes/uc_zip2tax'] = array(
+    'title' => 'Zip2Tax',
+    'description' => 'Settings for Zip2Tax',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('uc_zip2tax_settings_form'),
+    'file' => 'uc_zip2tax.admin.inc',
+    'access arguments' => array('configure taxes'),
+    'weight' => 1,
+  );
+
+  $items['admin/store/reports/zip2tax-lookup'] = array(
+    'title' => 'Zip2Tax lookup',
+    'description' => 'Look up the tax rate for a specified address.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('uc_zip2tax_lookup_form'),
+    'file' => 'uc_zip2tax.admin.inc',
+    'access arguments' => array('configure taxes'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function uc_zip2tax_config_info() {
+  $prefixes['uc_zip2tax.settings'] = array(
+    'label' => t('Zip2Tax settings'),
+    'group' => t('Configuration'),
+  );
+  return $prefixes;
+}
+
+/**
+ * Implements hook_uc_calculate_tax().
+ */
+function uc_zip2tax_uc_calculate_tax($order) {
+  $config = config('uc_zip2tax.settings');
+  if (!is_object($order)) {
+    return array();
+  }
+
+  $tax_id = $config->get('uc_zip2tax_tax_id');
+
+  // Check to see if this is an order by a wholesale user, in which case, no
+  // tax.
+  global $user;
+  $my_user = $order->uid ? user_load($order->uid) : $user;
+  $wholesale_roles = array_filter($config->get('uc_zip2tax_wholesale_roles'));
+  foreach ($wholesale_roles as $role) {
+    if (in_array($role, $my_user->roles)) {
+      return array();
+    }
+  }
+
+  // See if we've already calculated tax for this order and/or whether there is a NULL tax_id.
+  $existing_tax_item = NULL;
+  $has_null_id = FALSE;
+  foreach ($order->line_items as $item) {
+    if ($item['type'] == 'tax') {
+      if ($item['data']['tax_id'] == $tax_id) {
+        $existing_tax_item = $item;
+        break;
+      }
+      $has_null_id |= ($item['data']['tax_id'] == NULL);
+    }
+  }
+  // If there is a taxable item with a NULL tax_id, don't do anything.
+  if ($has_null_id) {
+    return array();
+  }
+
+  // If an order status makes it no longer mutable, return the existing tax.
+  $lookup_statuses = array_filter($config->get('uc_zip2tax_lookup_statuses'));
+  if (!in_array($order->order_status, $lookup_statuses)) {
+    if ($existing_tax_item) {
+      $line_item = (object) array(
+        'id' => $tax_id,
+        'name' => $existing_tax_item['title'],
+        'amount' => $existing_tax_item['amount'],
+        'weight' => $existing_tax_item['weight'],
+        'summed' => 1,
+        'data' => $existing_tax_item['data'],
+      );
+      return array($tax_id => $line_item);
+    }
+    else {
+      return array();
+    }
+  }
+
+  // Look at jurisdiction, find out if we're in a taxable state.
+  $country = $order->delivery_country;
+  if (!$country) {
+    $country = $order->billing_country;
+  }
+  $countries = uc_get_country_data(array('country_id' => $country));
+  if (!$countries || $countries[0]['country_iso_code_2'] != 'US') {
+    return array();
+  }
+  $zone = $order->delivery_zone;
+  if (!$zone) {
+    $zone = $order->billing_zone;
+  }
+  $zones = $config->get('uc_zip2tax_nexus_zones');
+  if (!isset($zones[$zone]) || !$zones[$zone]) {
+    return array();
+  }
+
+  // Get delivery info for lookup or billing if delivery is blank.
+  $zone = $order->delivery_zone;
+  $country = $order->delivery_country;
+  $street1 = $order->delivery_street1;
+  $street2 = $order->delivery_street2;
+  $city = $order->delivery_city;
+  $zip = $order->delivery_postal_code;
+  if (!$zone && !$country && !$street1 && !$city && !$zip) {
+    $zone = $order->billing_zone;
+    $country = $order->billing_country;
+    $street1 = $order->billing_street1;
+    $street2 = $order->billing_street2;
+    $city = $order->billing_city;
+    $zip = $order->billing_postal_code;
+  }
+  $state = uc_get_zone_code($zone);
+
+  // Calculate the taxable amount by the appropriate method.
+
+  $method = $config->get('uc_zip2tax_taxation_method');
+  if ($method == UC_ZIP2TAX_METHOD_PRODUCT_TYPE) {
+    $taxable_products = $config->get("uc_zip2tax_{$state}_product_types");
+    $taxable_products = $taxable_products ? array_filter($taxable_products) : array();
+  }
+  else { // $method == UC_ZIP2TAX_METHOD_TAXONOMY_TERM
+    $taxation_vocabulary = $config->get('uc_zip2tax_taxation_vocabulary');
+    $taxable_terms = $config->get("uc_zip2tax_{$state}_terms");
+  }
+
+  $taxable_amount = 0;
+  foreach ($order->products as $product) {
+    $node = node_load($product->nid);
+    $product_amount = $product->qty * $product->price;
+    if ($method == UC_ZIP2TAX_METHOD_PRODUCT_TYPE) {
+      if (isset($taxable_products[$node->type])) {
+        $taxable_amount += $product_amount;
+      }
+    }
+    else { // $method == UC_ZIP2TAX_METHOD_TAXONOMY_TERM
+      // To check taxability, we need to go through all of the term reference
+      // fields of the product node and see if any of them include the taxable
+      // terms for this state.
+      $is_taxable = FALSE;
+      $instances = field_info_instances('node', $node->type);
+      foreach ($instances as $field_name => $value) {
+        $field_info = field_info_field($field_name);
+        if ($field_info['type'] == 'taxonomy_term_reference') {
+          $field_name = $field_info['field_name'];
+          $terms = $product->$field_name['und'];
+          foreach ($terms as $term) {
+            $is_taxable |= isset($taxable_terms[$term['tid']]);
+          }
+        }
+      }
+      if ($is_taxable) {
+        $taxable_amount += $product_amount;
+      }
+    }
+  }
+
+  // Calculate the taxable amount for other line items.
+  $taxable_line_items = $config->get("uc_zip2tax_{$state}_line_items");
+  $taxable_line_items = $taxable_line_items ? array_filter($taxable_line_items) : array();
+  if (is_array($order->line_items)) {
+    foreach ($order->line_items as $key => $item) {
+      if (isset($taxable_line_items[$item['type']])) {
+        $taxable_amount += $item['amount'];
+      }
+    }
+  }
+
+  // Verify we have something to tax.
+  if (!$taxable_amount) {
+    return array();
+  }
+
+  // We're in a taxable jurisdiction and we have products that need tax, so
+  // lookup the rate from the Zip2Tax website.
+  $lookup = _uc_zip2tax_lookup($street1, $street2, $city, $state, $zip);
+  $rate = intval($lookup['rate']) / 100;
+
+  // dpm($lookup,'$lookup result');
+
+  if (!$rate) {
+    // If the rate happens to be zero (or empty), there's no tax to be applied.
+    return array();
+  }
+
+  $amount = round($taxable_amount * 100 * $rate) / 100;
+  $line_item = (object) array(
+    'id' => $tax_id,
+    'name' => $lookup['name'],
+    'amount' => $amount,
+    'weight' => 0,
+    'summed' => 1,
+    'data' => array(
+      'tax_id' => $tax_id,
+      'tax_rate' => $rate,
+      'taxable_amount' => $taxable_amount,
+      'tax_jurisdiction' => $lookup['code'],
+    ),
+  );
+  return array($tax_id => $line_item);
+}
+
+/**
+ * Query the Zip2Tax website for the applicable tax rate.
+ * @param $address - street address (no city)
+ * @param $zip - 5-digit ZIP code
+ * @return array - array of jurisdiction name, location code, applicable rate,
+ *   and if we failed. Note that we may return a nonzero rate even if lookup
+ *   failed if configuration specifies a default rate.
+ */
+function _uc_zip2tax_lookup($street1, $street2, $city, $state, $zip) {
+  $config = config('uc_zip2tax.settings');
+
+  // Cache successful values so if address hasn't changed, we don't need to do
+  // multiple lookups. But if the cached lookup failed, we'll try again.
+  $address_data =
+  $cache_id = __FUNCTION__ . implode('+', array_map('trim', array($street1, $street2, $city, $state, $zip)));
+
+  // First check the static cache in case we did a lookup during this same page
+  // load.
+  $uc_zip2tax_lookup = &backdrop_static($cache_id);
+  if (isset($uc_zip2tax_lookup)) {
+    return $uc_zip2tax_lookup;
+  }
+
+  // Still here? Look for a recent cached value in the db for this same address.
+  // But we'll only use cached values from the db if it wasn't a failure. If the
+  // last attempted lookup some time ago failed due to a connection issue, we
+  // don't want to immortalize that failure.
+  $db_cache = cache_get($cache_id, 'cache');
+  if ($db_cache) {
+    $db_cached_lookup = $db_cache->data;
+    if (!$db_cached_lookup['fail']) {
+      $uc_zip2tax_lookup = $db_cached_lookup;
+      return $uc_zip2tax_lookup;
+    }
+  }
+
+  // Still here? Look up the tax rate from Zip2Tax.
+  $url = 'https://api.zip2tax.com/TaxRate-USA.json';
+  $data = array(
+    'AddressLine1' => urlencode(trim($street1)),
+    'AddressLine2' => urlencode(trim($street2)),
+    'City' => urlencode(trim($city)),
+    'State' => urlencode(trim($state)),
+    'Zip' => urlencode(trim($zip)),
+    'username' => trim($config->get('uc_zip2tax_user')),
+    'password' => trim($config->get('uc_zip2tax_pass')),
+  );
+  $full_url = url($url, array('query' => $data));
+  $res = backdrop_http_request($full_url);
+
+  // For debugging tax site lookup errors
+  // dpm($full_url,'$full_url');
+  // dpm($res,'$res');
+
+  $name = $code = '';
+  $rate = $fail = 0;
+  if ($res->code != 200) {
+    // failed to get a response from the server or server error
+    $fail = TRUE;
+  }
+  else {
+    $zip2tax_data = backdrop_json_decode($res->data);
+    $error_code = $zip2tax_data['z2tLookup']['errorInfo']['errorCode'];
+    switch ($error_code) {
+      case 0: // Success!
+        $addressInfo = $zip2tax_data['z2tLookup']['addressInfo'];
+        $address = $addressInfo['addresses'][0]['address'];
+        $rate_info = $address['salesTax']['rateInfo'];
+        $rate = $rate_info['taxRate'];
+        $name = _uc_zip2tax_display_name($data, $rate_info);
+        $code = _uc_zip2tax_jurisdiction_code($data, $rate_info);
+        break;
+      case 8: // bad credentials
+        $error_msg = t('Zip2Tax rejected the login credentials.');
+        if (user_access('administer store')) {
+          backdrop_set_message($error_msg, 'error');
+        }
+        else {
+          watchdog('uc_zip2tax', $error_msg, WATCHDOG_WARNING);
+        }
+        $fail = TRUE;
+        break;
+      default: // any other failure
+        $fail = TRUE;
+    }
+  }
+  if ($fail) {
+    $name = _uc_zip2tax_display_name($data);
+    $code = _uc_zip2tax_jurisdiction_code($data);
+    $rate = $config->get("uc_zip2tax_{$state}_default_rate");
+    watchdog('uc_zip2tax', '@code: uc_zip2tax was unable to lookup a tax rate for street1=@street1, street2=@street2, city=@city, state=@state, zip=@zip', array('@code' => $res->code, '@street1' => $street1, '@street2' => $street2, '@city' => $city, '@state' => $state, '@zip' => $zip), WATCHDOG_WARNING);
+  }
+
+  $uc_zip2tax_lookup = array(
+    'name' => $name,
+    'code' => $code,
+    'rate' => $rate,
+    'fail' => $fail,
+  );
+
+  // For debugging tax site lookup errors
+  // dpm($uc_zip2tax_lookup,'$uc_zip2tax_lookup');
+
+  cache_set($cache_id, $uc_zip2tax_lookup, 'cache', CACHE_TEMPORARY);
+  return $uc_zip2tax_lookup;
+}
+
+/**
+ * Returns the display name that shows up on the checkout pane.
+ *
+ * @param string $data
+ *   decoded data array returned from Zip2Tax
+ * @param array $rate_info
+ *   rateInfo array returned from Zip2Tax, containing all rate details, or NULL
+ *   for a failed lookup.
+ * @return string
+ *   The string to be displayed on the cart.
+ */
+function _uc_zip2tax_display_name($data, $rate_info = NULL) {
+  $config = config('uc_zip2tax.settings');
+  if ($config->get('uc_zip2tax_show_state')) {
+    $name = $data['State'] . ' ' . t('Sales Tax');
+  }
+  else {
+    $name = t('Sales Tax');
+  }
+  if ($rate_info && $config->get('uc_zip2tax_show_jurisdiction')) {
+    $codes = array();
+    foreach ($rate_info['rateDetails'] as $elem) {
+      $code = trim($elem['rateDetail']['jurisdictionCode']);
+      if ($code) {
+        $codes[] = $code;
+      }
+    }
+    if (!empty($codes)) {
+      $name .= ' (' . implode(', ', $codes) . ')';
+    }
+  }
+  if ($config->get('uc_zip2tax_show_rate')) {
+    if ($rate_info) {
+      $rate = $rate_info['taxRate'];
+    }
+    else {
+      $rate = $config->get("uc_zip2tax_{$state}_default_rate");
+    }
+    $name .= ' ' . sprintf('%1.3f', $rate) . '%';
+  }
+  return $name;
+}
+
+/**
+ * Returns the jurisdiction code that shows up in the Sales Tax Report.
+ *
+ * @param string $data
+ *   decoded data array returned from Zip2Tax
+ * @param array $rate_info
+ *   rateInfo array returned from Zip2Tax, containing all rate details, or NULL
+ *   for a failed lookup.
+ * @return string
+ *   The string to be used as the jurisdiction code in the line item. Entries in
+ *   the Sale Tax Report are grouped by this quantity.
+ */
+function _uc_zip2tax_jurisdiction_code($data, $rate_info = NULL) {
+  $jurisdiction_code = $data['State'];
+  $codes = array();
+  if ($rate_info) {
+    foreach ($rate_info['rateDetails'] as $elem) {
+      $code = trim($elem['rateDetail']['jurisdictionCode']);
+      if ($code) {
+        $codes[] = $code;
+      }
+    }
+  }
+  else {
+    $codes = array('Default');
+  }
+  if (!empty($codes)) {
+    $jurisdiction_code .= ' (' . implode(', ', $codes) . ')';
+  }
+  else {
+    // Zip2Tax can return a rate with only partially successful looking that contains
+    // no jurisdiction codes. In that case, we'll construct a proxy jurisdiction code
+    // from the ZIP code.
+    // OrigamiUSA-specific tweak: but only for NY.
+    if ($data['State'] == 'NY') {
+      $jurisdiction_code .= ' (ZIP=' . $data['Zip'] . ')';
+    }
+  }
+  return $jurisdiction_code;
+}

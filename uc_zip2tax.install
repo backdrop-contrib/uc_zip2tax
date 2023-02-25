@@ -1,0 +1,44 @@
+<?php
+/**
+ * @file
+ * Install, update and uninstall functions for the uc_zip2tax module.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function uc_zip2tax_install() {
+  $config = config('uc_zip2tax.settings');
+  $config->set('uc_zip2tax_tax_id', '');
+  $config->set('uc_zip2tax_user','');
+  $config->set('uc_zip2tax_pass', '');
+  $config->set('uc_zip2tax_lookup_statuses', array());
+  $config->set('uc_zip2tax_show_state', '0');
+  $config->set('uc_zip2tax_show_jurisdiction', '0');
+  $config->set('uc_zip2tax_show_rate', '0');
+  $config->set('uc_zip2tax_wholesale_roles', array());
+  $config->set('uc_zip2tax_nexus_countries', array());
+  $config->set('uc_zip2tax_nexus_zones', array());
+  $config->set('uc_zip2tax_taxation_method', "0");
+  $config->set('uc_zip2tax_taxation_vocabulary', "0");
+  $config->save();
+}
+
+/**
+ * Migrate uc_zip2tax variables to config.
+ */
+function uc_zip2tax_update_1000() {
+  $config = config('uc_zip2tax.settings');
+  $names = db_query('
+    SELECT name
+    FROM {variable}
+    WHERE name
+    LIKE :name
+    ', array(':name' => 'uc_zip2tax_%%'))
+    ->fetchCol();
+  foreach ($names as $name) {
+    $config->set($name, update_variable_get($name, ''));
+    update_variable_del($name);
+  }
+  $config->save();
+}
