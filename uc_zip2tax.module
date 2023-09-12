@@ -57,6 +57,11 @@ function uc_zip2tax_uc_calculate_tax($order) {
     return array();
   }
 
+  // Nothing to calculate if the order doesn't have products yet.
+  if (empty($order->products)) {
+    return array();
+  }
+
   $tax_id = $config->get('uc_zip2tax_tax_id');
 
   // Check to see if this is an order by a wholesale user, in which case, no
@@ -409,13 +414,10 @@ function _uc_zip2tax_jurisdiction_code($data, $rate_info = NULL) {
     $jurisdiction_code .= ' (' . implode(', ', $codes) . ')';
   }
   else {
-    // Zip2Tax can return a rate with only partially successful looking that contains
-    // no jurisdiction codes. In that case, we'll construct a proxy jurisdiction code
-    // from the ZIP code.
-    // OrigamiUSA-specific tweak: but only for NY.
-    if ($data['State'] == 'NY') {
-      $jurisdiction_code .= ' (ZIP=' . $data['Zip'] . ')';
-    }
+    // Zip2Tax can return a rate with only partially successful lookup that
+    // contains no jurisdiction codes. In that case, we'll construct a proxy
+    // jurisdiction code from the ZIP code.
+    $jurisdiction_code .= ' (ZIP=' . $data['Zip'] . ')';
   }
   return $jurisdiction_code;
 }
