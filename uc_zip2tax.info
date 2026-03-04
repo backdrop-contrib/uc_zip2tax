@@ -4,5 +4,6 @@ dependencies[] = uc_taxes
 package = Ubercart - extra
 backdrop = 1.x
 type = module
+dependencies[] = ubercart
 
 configure = admin/store/settings/taxes/uc_zip2tax

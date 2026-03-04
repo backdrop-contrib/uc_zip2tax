@@ -413,7 +413,7 @@ function uc_zip2tax_lookup_form_info_callback($form, &$form_state) {
   $city = $form_state['values']['city'];
   $usa = uc_country_option_list()[840];
   $zones = uc_zone_option_list()[$usa];
-  $zone = $zones[$form_state['values']['zone']];
+  $state = $zones[$form_state['values']['zone']];
   $zip = $form_state['values']['zip'];
 
   $lookup = _uc_zip2tax_lookup($street1, $street2, $city, $state, $zip);

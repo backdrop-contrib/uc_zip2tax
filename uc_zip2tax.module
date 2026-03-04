@@ -324,7 +324,19 @@ function _uc_zip2tax_lookup($street1, $street2, $city, $state, $zip) {
     $name = _uc_zip2tax_display_name($data);
     $code = _uc_zip2tax_jurisdiction_code($data);
     $rate = $config->get("uc_zip2tax_{$state}_default_rate");
-    watchdog('uc_zip2tax', '@code: uc_zip2tax was unable to lookup a tax rate for street1=@street1, street2=@street2, city=@city, state=@state, zip=@zip', array('@code' => $res->code, '@street1' => $street1, '@street2' => $street2, '@city' => $city, '@state' => $state, '@zip' => $zip), WATCHDOG_WARNING);
+    watchdog('uc_zip2tax', '@response_code: uc_zip2tax was unable to lookup a tax rate for street1=@street1, street2=@street2, city=@city, state=@state, zip=@zip', array(
+      '@response_code' => $res->code,
+      '@street1' => $street1,
+      '@street2' => $street2,
+      '@city' => $city,
+      '@state' => $state,
+      '@zip' => $zip,
+    ), WATCHDOG_WARNING);
+    // TEMPORARY DEBUGGING
+//     if (user_access('configure taxes')) {
+//       watchdog('uc_zip2tax', 'Request: @req', array('@req' => print_r($full_url, TRUE)), WATCHDOG_WARNING);
+//       watchdog('uc_zip2tax', 'Response: @res', array('@res' => print_r($res, TRUE)), WATCHDOG_WARNING);
+//     }
   }
 
   $uc_zip2tax_lookup = array(
