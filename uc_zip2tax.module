@@ -208,7 +208,7 @@ function uc_zip2tax_uc_calculate_tax($order) {
   // We're in a taxable jurisdiction and we have products that need tax, so
   // lookup the rate from the Zip2Tax website.
   $lookup = _uc_zip2tax_lookup($street1, $street2, $city, $state, $zip);
-  $rate = intval($lookup['rate']) / 100;
+  $rate = floatval($lookup['rate']) / 100.0;
 
   // dpm($lookup,'$lookup result');
 
